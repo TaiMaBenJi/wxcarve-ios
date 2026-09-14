@@ -1,0 +1,30 @@
+name: WxCarve
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+targets:
+  WxCarve:
+    type: application
+    platform: iOS
+    sources:
+      - WxCarveApp.swift
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: 微信恢复
+        CFBundleShortVersionString: "1.0"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # 让 App 的 Documents 目录出现在"文件"App 里，方便把 MM.sqlite 拖进去
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.wxcarve
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic

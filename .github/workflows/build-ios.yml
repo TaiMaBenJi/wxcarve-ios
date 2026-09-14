@@ -1,0 +1,59 @@
+name: build-ios-ipa
+
+# 没有 Mac 也能出 IPA：GitHub 的云端 Mac 替你编译。
+# 编译产物是【未签名】的 ipa，还要用 Sideloadly + 你自己的 Apple ID 签名才能装进 iPhone。
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不管你上传的是解压后的文件夹，还是直接丢了个 zip，这里都能处理
+      - name: 准备源码
+        run: |
+          if [ -f wxcarve-ios-repo.zip ]; then
+            unzip -oq wxcarve-ios-repo.zip
+            echo "已解压 wxcarve-ios-repo.zip"
+          fi
+          echo "--- 仓库内容 ---"
+          ls -R | head -60
+
+      - name: 定位工程目录
+        run: |
+          P=$(find . -name project.yml -not -path './.git/*' | head -1)
+          if [ -z "$P" ]; then echo "!! 没找到 project.yml"; exit 1; fi
+          echo "IOS_DIR=$(dirname $P)" >> $GITHUB_ENV
+          echo "找到工程: $P"
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        working-directory: ${{ env.IOS_DIR }}
+        run: xcodegen generate
+
+      - name: 编译（不签名）
+        working-directory: ${{ env.IOS_DIR }}
+        run: |
+          xcodebuild -project WxCarve.xcodeproj -scheme WxCarve \
+            -sdk iphoneos -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: 打包成 .ipa
+        working-directory: ${{ env.IOS_DIR }}
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/WxCarve.app Payload/
+          zip -qry WxCarve-unsigned.ipa Payload
+          ls -la WxCarve-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WxCarve-unsigned-ipa
+          path: ${{ env.IOS_DIR }}/WxCarve-unsigned.ipa

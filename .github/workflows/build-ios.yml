@@ -1,7 +1,9 @@
 name: build-ios-ipa
 
-# 没有 Mac 也能出 IPA：GitHub 的云端 Mac 替你编译。
-# 编译产物是【未签名】的 ipa，还要用 Sideloadly + 你自己的 Apple ID 签名才能装进 iPhone。
+# 微信聊天记录恢复 · iOS 版云端编译
+# 不依赖 Xcode 工程文件（XcodeGen 生成的格式在新旧 Xcode 之间会不兼容），
+# 直接用 swiftc 编译出 .app 包再打成 ipa。产物是【未签名】的，需要用
+# Sideloadly + 你自己的 Apple ID 签名后才能装进 iPhone。
 on:
   push:
   workflow_dispatch:
@@ -12,7 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 不管你上传的是解压后的文件夹，还是直接丢了个 zip，这里都能处理
       - name: 准备源码
         run: |
           if [ -f wxcarve-ios-repo.zip ]; then
@@ -20,40 +21,68 @@ jobs:
             echo "已解压 wxcarve-ios-repo.zip"
           fi
           echo "--- 仓库内容 ---"
-          ls -R | head -60
+          ls -R | head -40
 
-      - name: 定位工程目录
+      - name: 定位源码
         run: |
-          P=$(find . -name project.yml -not -path './.git/*' | head -1)
-          if [ -z "$P" ]; then echo "!! 没找到 project.yml"; exit 1; fi
-          echo "IOS_DIR=$(dirname $P)" >> $GITHUB_ENV
-          echo "找到工程: $P"
+          S=$(find . -name WxCarveApp.swift -not -path './.git/*' | head -1)
+          if [ -z "$S" ]; then echo "!! 没找到 WxCarveApp.swift"; exit 1; fi
+          echo "SRC_DIR=$(dirname $S)" >> $GITHUB_ENV
+          echo "源码: $S"
 
-      - name: 安装 XcodeGen
-        run: brew install xcodegen
-
-      - name: 生成 Xcode 工程
-        working-directory: ${{ env.IOS_DIR }}
-        run: xcodegen generate
-
-      - name: 编译（不签名）
-        working-directory: ${{ env.IOS_DIR }}
+      - name: 编译出 .app（swiftc 直出，不用 Xcode 工程）
+        working-directory: ${{ env.SRC_DIR }}
         run: |
-          xcodebuild -project WxCarve.xcodeproj -scheme WxCarve \
-            -sdk iphoneos -configuration Release \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build
+          set -euo pipefail
+          xcodebuild -version || true
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK = $SDK"
+          rm -rf WxCarve.app Payload WxCarve-unsigned.ipa
+          mkdir -p WxCarve.app
+          xcrun --sdk iphoneos swiftc -parse-as-library \
+            -target arm64-apple-ios16.0 -sdk "$SDK" -O \
+            -module-name WxCarve \
+            -o WxCarve.app/WxCarve WxCarveApp.swift
+          echo "--- 编译产物 ---"
+          ls -la WxCarve.app/
+          file WxCarve.app/WxCarve
 
-      - name: 打包成 .ipa
-        working-directory: ${{ env.IOS_DIR }}
+      - name: 写 Info.plist 并打包成 ipa
+        working-directory: ${{ env.SRC_DIR }}
         run: |
+          set -euo pipefail
+          cat > WxCarve.app/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>WxCarve</string>
+            <key>CFBundleIdentifier</key><string>com.wxcarve.recover</string>
+            <key>CFBundleName</key><string>WxCarve</string>
+            <key>CFBundleDisplayName</key><string>微信恢复</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>CFBundleShortVersionString</key><string>1.0</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>MinimumOSVersion</key><string>16.0</string>
+            <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+            <key>UILaunchScreen</key><dict/>
+            <key>UISupportedInterfaceOrientations</key>
+            <array><string>UIInterfaceOrientationPortrait</string></array>
+            <key>UIFileSharingEnabled</key><true/>
+            <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+            <key>NSPhotoLibraryAddUsageDescription</key><string>保存恢复出来的聊天记录</string>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint WxCarve.app/Info.plist
           mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/WxCarve.app Payload/
+          cp -R WxCarve.app Payload/
           zip -qry WxCarve-unsigned.ipa Payload
+          echo "--- ipa ---"
           ls -la WxCarve-unsigned.ipa
 
       - uses: actions/upload-artifact@v4
         with:
           name: WxCarve-unsigned-ipa
-          path: ${{ env.IOS_DIR }}/WxCarve-unsigned.ipa
+          path: ${{ env.SRC_DIR }}/WxCarve-unsigned.ipa

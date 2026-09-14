@@ -945,11 +945,17 @@ struct ContentView: View {
     @State private var chatTables: [String] = []
     @State private var chosen: String?
     @State private var showImporter = false
+    @State private var autoStatus = ""
+    @State private var autoRan = false
 
     var body: some View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    if !autoStatus.isEmpty {
+                        Text(autoStatus).font(.footnote).foregroundColor(.green)
+                    }
+
                     GroupBox("1 · 选择数据库文件") {
                         VStack(alignment: .leading, spacing: 8) {
                             Button {
@@ -1045,6 +1051,12 @@ struct ContentView: View {
                 .padding()
             }
             .navigationTitle("微信聊天记录恢复")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("重扫") { autoRan = false; autoLoadFromDocuments() }
+                }
+            }
+            .onAppear { autoLoadFromDocuments() }
             .fileImporter(isPresented: $showPicker,
                           allowedContentTypes: [.data, .database],
                           allowsMultipleSelection: false) { result in
@@ -1059,7 +1071,43 @@ struct ContentView: View {
         HStack { Text(k); Spacer(); Text(v).bold() }
     }
 
-    private func load() {
+    /// 打开 App 就自动在"本 App 的文件夹"里找数据库并直接开始恢复。
+    /// （iOS 不允许任何 App 读微信自己的目录，所以数据得由你把备份里取出的
+    ///   MM.sqlite 放到"文件"App → 微信恢复 这个文件夹里，之后全自动。）
+    private func autoLoadFromDocuments() {
+        guard !autoRan else { return }
+        autoRan = true
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        guard let en = FileManager.default.enumerator(at: docs,
+                                                      includingPropertiesForKeys: [.fileSizeKey],
+                                                      options: [.skipsHiddenFiles]) else { return }
+        var dbs: [URL] = []
+        var all: [URL] = []
+        for case let u as URL in en {
+            guard u.hasDirectoryPath == false else { continue }
+            all.append(u)
+            let n = u.lastPathComponent.lowercased()
+            if n.hasSuffix(".sqlite") || n.hasSuffix(".db") || n == "mm.sqlite" {
+                dbs.append(u)
+            }
+        }
+        guard let db = dbs.max(by: { fileSize($0) < fileSize($1) }) else {
+            autoStatus = "把 MM.sqlite（和 MM.sqlite-wal）拷进：文件 App → 微信恢复 文件夹，重开本 App 即自动开始。"
+            return
+        }
+        let wal = all.first { $0.lastPathComponent == db.lastPathComponent + "-wal" }
+        dbURL = db
+        walURL = wal
+        autoStatus = "已自动载入 \(db.lastPathComponent)"
+            + (wal != nil ? " + wal" : "") + "，正在自动恢复…"
+        load(autoCarve: true)
+    }
+
+    private func fileSize(_ u: URL) -> Int {
+        (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+    }
+
+    private func load(autoCarve: Bool = false) {
         guard let dbURL = dbURL else { return }
         busy = true; message = ""; rows = []; stats = nil; chatTables = []
         progress = 0; progressText = "读取文件…"
@@ -1083,6 +1131,10 @@ struct ContentView: View {
                     message = "页大小 \(db.pageSize)B，共 \(db.npages) 页，freelist \(db.nFreelist) 页"
                         + (wal.frameCount > 0 ? "，WAL \(wal.frameCount) 帧 / 覆盖 \(wal.frames.count) 页" : "")
                     progressText = "解析完成"
+                    if autoCarve {
+                        autoStatus = "已自动载入并开始全库恢复…"
+                        carve(table: nil)      // 全库扫：连被删掉的会话一起捞
+                    }
                 }
             } catch {
                 DispatchQueue.main.async { busy = false; message = "解析失败：\((error as? DbError)?.msg ?? "\(error)")" }
